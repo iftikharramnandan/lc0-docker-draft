@@ -9,6 +9,17 @@ on:
   repository_dispatch:
     types: [lc0-release]
 
+  # Nightly edge builds from lc0 master (for testing)
+  schedule:
+    - cron: '0 0 * * *'  # UTC midnight
+
+  # Rebuild :edge when Docker/CI files change on release branch
+  push:
+    branches: [release]
+    paths:
+      - Dockerfile
+      - .github/workflows/docker-publish.yml
+
   # Manual trigger for testing / hotfix builds
   workflow_dispatch:
     inputs:
@@ -25,6 +36,11 @@ on:
         type: boolean
         required: false
         default: true
+      edge:
+        description: "Build as edge (uses lc0 master, tags as :edge only)"
+        type: boolean
+        required: false
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -60,6 +76,7 @@ jobs:
           INPUT_LC0_VERSION: ${{ github.event.inputs.lc0_version }}
           INPUT_CLIENT_VERSION: ${{ github.event.inputs.client_version }}
           INPUT_PUSH: ${{ github.event.inputs.push }}
+          INPUT_EDGE: ${{ github.event.inputs.edge }}
           DEFAULT_LC0_VERSION: ${{ steps.defaults.outputs.default_lc0_version }}
           DEFAULT_CLIENT_VERSION: ${{ steps.defaults.outputs.default_client_version }}
         run: |
@@ -68,8 +85,13 @@ jobs:
           LC0_VERSION="$DEFAULT_LC0_VERSION"
           CLIENT_VERSION="$DEFAULT_CLIENT_VERSION"
           DO_PUSH="true"
+          IS_EDGE="false"
 
-          if [ "$EVENT_NAME" = "release" ]; then
+          if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "push" ]; then
+            # Nightly scheduled builds and push-triggered builds are edge builds (lc0 master)
+            LC0_VERSION="master"
+            IS_EDGE="true"
+          elif [ "$EVENT_NAME" = "release" ]; then
             # Release tag is the client version (e.g. v34)
             if [ -n "${RELEASE_TAG:-}" ]; then
               CLIENT_VERSION="$RELEASE_TAG"
@@ -83,38 +105,58 @@ jobs:
               CLIENT_VERSION="$DISPATCH_CLIENT_VERSION"
             fi
           elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            if [ -n "${INPUT_LC0_VERSION:-}" ]; then
-              LC0_VERSION="$INPUT_LC0_VERSION"
-            fi
-            if [ -n "${INPUT_CLIENT_VERSION:-}" ]; then
-              CLIENT_VERSION="$INPUT_CLIENT_VERSION"
+            if [ "${INPUT_EDGE:-false}" = "true" ]; then
+              # Manual edge build
+              LC0_VERSION="master"
+              IS_EDGE="true"
+            else
+              if [ -n "${INPUT_LC0_VERSION:-}" ]; then
+                LC0_VERSION="$INPUT_LC0_VERSION"
+              fi
+              if [ -n "${INPUT_CLIENT_VERSION:-}" ]; then
+                CLIENT_VERSION="$INPUT_CLIENT_VERSION"
+              fi
             fi
             if [ "${INPUT_PUSH:-true}" = "false" ]; then
               DO_PUSH="false"
             fi
           fi
 
-          echo "lc0_version=$LC0_VERSION" >> "$GITHUB_OUTPUT"
-          echo "client_version=$CLIENT_VERSION" >> "$GITHUB_OUTPUT"
-          echo "do_push=$DO_PUSH" >> "$GITHUB_OUTPUT"
+          {
+            echo "lc0_version=$LC0_VERSION"
+            echo "client_version=$CLIENT_VERSION"
+            echo "do_push=$DO_PUSH"
+            echo "is_edge=$IS_EDGE"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate GHCR tags
         id: tags
         env:
           LC0_VERSION: ${{ steps.versions.outputs.lc0_version }}
           CLIENT_VERSION: ${{ steps.versions.outputs.client_version }}
+          IS_EDGE: ${{ steps.versions.outputs.is_edge }}
           REGISTRY: ${{ env.REGISTRY }}
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
           set -euo pipefail
-          {
-            echo "tags<<EOF"
-            echo "${REGISTRY}/${IMAGE_NAME}:latest"
-            echo "${REGISTRY}/${IMAGE_NAME}:lc0-${LC0_VERSION}"
-            echo "${REGISTRY}/${IMAGE_NAME}:client-${CLIENT_VERSION}"
-            echo "${REGISTRY}/${IMAGE_NAME}:lc0-${LC0_VERSION}_client-${CLIENT_VERSION}"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          if [ "$IS_EDGE" = "true" ]; then
+            # Edge builds only get :edge tag
+            {
+              echo "tags<<EOF"
+              echo "${REGISTRY}/${IMAGE_NAME}:edge"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            # Stable builds get full tag set
+            {
+              echo "tags<<EOF"
+              echo "${REGISTRY}/${IMAGE_NAME}:latest"
+              echo "${REGISTRY}/${IMAGE_NAME}:lc0-${LC0_VERSION}"
+              echo "${REGISTRY}/${IMAGE_NAME}:client-${CLIENT_VERSION}"
+              echo "${REGISTRY}/${IMAGE_NAME}:lc0-${LC0_VERSION}_client-${CLIENT_VERSION}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -168,16 +210,23 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Docker build summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**lc0:** ${{ steps.versions.outputs.lc0_version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Client:** ${{ steps.versions.outputs.client_version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Push:** ${{ steps.versions.outputs.do_push }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Tags" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.tags.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Docker build summary"
+            echo ""
+            if [ "${{ steps.versions.outputs.is_edge }}" = "true" ]; then
+              echo "**Type:** Edge (lc0 master)"
+            else
+              echo "**Type:** Stable"
+            fi
+            echo "**lc0:** ${{ steps.versions.outputs.lc0_version }}"
+            echo "**Client:** ${{ steps.versions.outputs.client_version }}"
+            echo "**Push:** ${{ steps.versions.outputs.do_push }}"
+            echo ""
+            echo "### Tags"
+            echo '```'
+            echo "${{ steps.tags.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # TODO(pre-merge): Uncomment to enable releases URL in docs/DOCKER.md
       # This uploads auto-update.sh as a release asset so users can download via:

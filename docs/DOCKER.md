@@ -94,6 +94,7 @@ Use `--user $(id -u):$(id -g)` to ensure files are owned by your host user, not 
 | `:lc0-vX.Y.Z` | Pinned to engine version | Pin to specific lc0 version |
 | `:client-vN` | Pinned to client version | Pin to specific client version |
 | `:lc0-vX.Y.Z_client-vN` | Fully pinned | Reproducible builds |
+| `:edge` | Nightly build from lc0 master | Testing only (see below) |
 
 Examples:
 
@@ -107,6 +108,23 @@ ghcr.io/leelachesszero/lc0-training-client:lc0-v0.32.1
 # Fully pinned
 ghcr.io/leelachesszero/lc0-training-client:lc0-v0.32.1_client-v34
 ```
+
+### Edge Builds (Testing Only)
+
+The `:edge` tag is built nightly from lc0's `master` branch. This lets testers try the latest engine changes before they're released.
+
+**Warning:** Do not run `:edge` on production farms. It may contain breaking changes, experimental features, or bugs. Use `:latest` for stable selfplay contributions.
+
+```bash
+# Run edge for testing (not recommended for farms)
+./auto-update.sh --user=USER --password=PASS --image=ghcr.io/leelachesszero/lc0-training-client:edge
+```
+
+Edge builds:
+- Rebuild every night at UTC midnight (and when Docker/CI files change)
+- Track lc0 `master` (not a release tag)
+- Only receive the `:edge` tag (never `:latest`)
+- May fail if lc0 master is broken
 
 ## GPU Selection
 
