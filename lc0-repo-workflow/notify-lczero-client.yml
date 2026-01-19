@@ -1,0 +1,50 @@
+name: Notify lczero-client Docker build
+
+on:
+  release:
+    types: [published]
+  # Manual testing without cutting a release
+  workflow_dispatch:
+    inputs:
+      lc0_version:
+        description: "lc0 tag to dispatch (e.g., v0.32.1)"
+        required: false
+        default: ""
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    # Skip prereleases by default; you can still test via workflow_dispatch
+    if: github.event_name != 'release' || github.event.release.prerelease == false
+    permissions:
+      contents: read
+    steps:
+      - name: Determine lc0 version
+        id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.lc0_version }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG="$RELEASE_TAG"
+          else
+            TAG="$INPUT_TAG"
+          fi
+
+          if [ -z "$TAG" ]; then
+            echo "lc0_version is empty. Provide workflow_dispatch input or publish a release." >&2
+            exit 1
+          fi
+
+          echo "lc0_version=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch to lczero-client
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.LC0_CLIENT_DISPATCH_TOKEN }}
+          repository: LeelaChessZero/lczero-client
+          event-type: lc0-release
+          client-payload: |
+            {"lc0_version":"${{ steps.ver.outputs.lc0_version }}"}
